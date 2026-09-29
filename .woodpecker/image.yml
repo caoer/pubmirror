@@ -1,0 +1,32 @@
+# Builds the publisher image from Dockerfile and pushes it to the forge's
+# container registry as <forge host>/<owner>/pubmirror:<commit>. The last log
+# line names the image by digest; adopters pin that reference.
+#
+# Built unprivileged with kaniko: the CI server grants no privileged plugins.
+# The registry host and owner come from the pipeline's own environment, so this
+# file names no host.
+labels:
+  backend: docker
+
+when:
+  - event: push
+    branch: main
+    path:
+      include: [Dockerfile, .dockerignore, go.mod, go.sum, "cmd/**", "internal/**", "image/**", .woodpecker/image.yml]
+
+depends_on: [ci]
+
+steps:
+  - name: image
+    image: gcr.io/kaniko-project/executor:v1.24.0-debug@sha256:2562c4fe551399514277ffff7dcca9a3b1628c4ea38cb017d7286dc6ea52f4cd
+    # The debug image has /busybox/sh and no /bin/sh.
+    entrypoint: ["/busybox/sh", "-c", "echo $CI_SCRIPT | base64 -d | /busybox/sh -e"]
+    environment:
+      REGISTRY_TOKEN:
+        from_secret: gitea_token
+    commands:
+      - registry="$${CI_FORGE_URL#*://}"
+      - repo="$registry/$${CI_REPO_OWNER}/pubmirror"
+      - printf '{"auths":{"%s":{"username":"%s","password":"%s"}}}' "$registry" "$CI_REPO_OWNER" "$REGISTRY_TOKEN" > /kaniko/.docker/config.json
+      - /kaniko/executor --context "dir://$CI_WORKSPACE" --dockerfile "$CI_WORKSPACE/Dockerfile" --destination "$repo:$CI_COMMIT_SHA" --digest-file /kaniko/digest --reproducible
+      - echo "image $repo@$(cat /kaniko/digest)"

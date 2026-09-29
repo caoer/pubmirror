@@ -1,0 +1,55 @@
+# pubmirror: check on every push, publish on an approved manual run.
+#
+# Copy to .woodpecker/public-mirror.yml (snapshot mode keeps that path internal)
+# and replace DIGEST, twice, with the publisher image's digest. The image lines
+# name the registry through the pipeline's own variables, so this file names no
+# host and passes the scan in exact mode, where it is public. If the image lives
+# under another owner than the repository, replace ${CI_REPO_OWNER} too.
+#
+# Secrets (README, "Adopt"), both limited to REGISTRY/OWNER/pubmirror@sha256:DIGEST:
+#   pubmirror_denylist     the denylist text; events push, manual
+#   pubmirror_deploy_key   the public repository's deploy key; event manual
+#
+# Both steps are plugin steps: no commands, entrypoint or environment. CI
+# releases an image-limited secret only to such a step of the named image, whose
+# entrypoint runs `pubmirror check` or `pubmirror publish` as `mode` says. A
+# step that runs commands, on any branch, gets neither secret: the pipeline
+# fails before it starts. `publish` refuses anything but an approved commit on
+# main.
+
+labels:
+  backend: docker # never the host-local backend: the secrets stay in a container
+
+when:
+  - event: [push, manual]
+
+clone:
+  - name: clone
+    image: docker.io/woodpeckerci/plugin-git:2.9.2
+    settings:
+      partial: false # every object local: check and publish read git objects
+      depth: 0
+      tags: false
+
+steps:
+  - name: check
+    image: ${CI_FORGE_URL#*://}/${CI_REPO_OWNER}/pubmirror@sha256:DIGEST
+    settings:
+      mode: check
+      denylist:
+        from_secret: pubmirror_denylist
+
+  # A manual run with the variable PUBMIRROR_APPROVE=X:H:D, X, H and D as
+  # `pubmirror stage --commit X` printed them.
+  - name: publish
+    image: ${CI_FORGE_URL#*://}/${CI_REPO_OWNER}/pubmirror@sha256:DIGEST
+    depends_on: [check]
+    when:
+      - event: manual
+        evaluate: 'PUBMIRROR_APPROVE != ""'
+    settings:
+      mode: publish
+      deploy_key:
+        from_secret: pubmirror_deploy_key
+      denylist:
+        from_secret: pubmirror_denylist
